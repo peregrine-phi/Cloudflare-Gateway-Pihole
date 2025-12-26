@@ -192,7 +192,10 @@ vcs.zijieapi.com
 # ========================================
 # 网易 (NetEase) 广告、追踪和其他服务
 # ========================================
+iadmat.nosdn.127.net
+iadmatapk.nosdn.127.net
 iadmusicmat.music.126.net
+iadmusicmatvideo.music.126.net
 ipv4.music.163.com
 ipv6.music.163.com
 lbs.netease.im
