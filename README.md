@@ -1,10 +1,21 @@
-![CF_logo_stacked_whitetype](https://github.com/luxysiv/Cloudflare-Gateway-Pihole/assets/46205571/b8b7b12b-2fd8-4978-8e3c-2472a4167acb)
-
 **[English](README.md)** | **[Việt Nam](docs/vi.md)**
 
-# New update 
+# Schedule
 
-* If you receive an email saying that the Github Action will be disabled, When it is disabled, you go to the Github Action and turn it on and it will work forever. 
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/luxysiv/cloudflare-gateway-pihole-trigger)
+
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `GITHUB_TOKEN` | Your GitHub Personal Access Token (Need Workflow permission and no expiration) | `ghp_xxxxxxxxxxxx` |
+| `GITHUB_USER` | Your GitHub username | `luxysiv` |
+| `GITHUB_REPO` | The name of your repository | `Cloudflare-Gateway-Pihole` |
+| `WORKFLOW_ID` | The filename of your workflow | `main.yml` |
+
+* Opt for a private repository when deploying.
+
+* Once deployment is complete, you may remove the cloned repository.
+
+# New update 
 
 * Major update, you can run cron every hour, no need to worry about losing blocking effect, no damage to Cloudflare Gateway server 
 
@@ -59,6 +70,7 @@ Adguard = https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
   ```
 
 * You should add your ad list and whitelist to Action variables. If you update your fork, your custom list will not be lost.
+
 
 ### How to set this up?
 ---
