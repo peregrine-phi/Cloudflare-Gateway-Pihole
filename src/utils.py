@@ -4,6 +4,7 @@ import json
 import http.client
 from src import ids_pattern, CACHE_FILE
 from src.cloudflare import get_lists, get_rules, get_list_items
+from src.requests import NotFoundException
 
 
 class GithubAPI:
@@ -80,7 +81,13 @@ def get_current_rules(cache, rule_name):
 def get_list_items_cached(cache, list_id):
     if list_id in cache["mapping"]:
         return cache["mapping"][list_id]
-    items = get_list_items(list_id)
+    try:
+        items = get_list_items(list_id)
+    except NotFoundException:
+        cache["mapping"].pop(list_id, None)
+        cache["lists"] = [l for l in cache["lists"] if l["id"] != list_id]
+        save_cache(cache)
+        return None
     cache["mapping"][list_id] = items
     save_cache(cache)
     return items

@@ -5,6 +5,7 @@ from src.cloudflare import (
     create_list, update_list, create_rule, 
     update_rule, delete_list, delete_rule
 )
+from src.requests import NotFoundException
 
 
 class CloudflareManager:
@@ -25,7 +26,13 @@ class CloudflareManager:
         list_id_to_domains = {}
         for lst in current_lists:
             items = utils.get_list_items_cached(self.cache, lst["id"])
+            if items is None:
+                info(f"Skipping stale list: {lst['name']} (not found on Cloudflare)")
+                continue
             list_id_to_domains[lst["id"]] = set(items)
+
+        # Refresh current_lists after possible stale list removal
+        current_lists = self.cache["lists"]
 
         # Mapping domain to its current list_id
         domain_to_list_id = {domain: lst_id for lst_id, domains in list_id_to_domains.items() for domain in domains}
@@ -58,7 +65,17 @@ class CloudflareManager:
                     remaining_domains.difference_update(new_items)
 
                 if remove_items or new_items:
-                    update_list(list_id, remove_items, new_items)
+                    try:
+                        update_list(list_id, remove_items, new_items)
+                    except NotFoundException:
+                        info(f"List {list_name} no longer exists on Cloudflare, recreating...")
+                        new_items_full = list(remaining_domains)[:1000]
+                        remaining_domains.difference_update(new_items_full)
+                        lst = create_list(list_name, new_items_full)
+                        self.cache["lists"].append(lst)
+                        self.cache["mapping"][lst["id"]] = new_items_full
+                        new_list_ids.append(lst["id"])
+                        continue
                     info(
                         f"Updated list: {list_name} "
                         f"| Added {len(new_items)} domains,"

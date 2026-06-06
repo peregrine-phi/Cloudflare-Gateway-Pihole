@@ -1,0 +1,51 @@
+name: Sync ByteDance Blocklist
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # Every Monday at 00:00 UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync from v2fly
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@main
+
+      - name: Install Python
+        uses: actions/setup-python@main
+        with:
+          python-version: "3.11"
+
+      - name: Run Sync Script
+        run: python scripts/sync_bytedance.py
+
+      - name: Check for Changes
+        id: diff
+        run: |
+          if git diff --quiet lists/bytedance_blocklist.txt; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            COUNT=$(grep -c '[a-z]' lists/bytedance_blocklist.txt || echo 0)
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: sync ByteDance blocklist from v2fly"
+          title: "chore: sync ByteDance blocklist from upstream"
+          body: |
+            Auto-synced ByteDance domain list from [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community).
+            
+            Domain count: ${{ steps.diff.outputs.count }}
+          branch: sync/bytedance-blocklist
+          delete-branch: true
+          labels: automated

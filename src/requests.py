@@ -18,6 +18,9 @@ class HTTPException(Exception):
 class RateLimitException(HTTPException):
     pass
 
+class NotFoundException(HTTPException):
+    pass
+
 # Cloudflare Gateway Request Function
 def cloudflare_gateway_request(
     method: str, endpoint: str,
@@ -63,8 +66,12 @@ def cloudflare_gateway_request(
             if status == 429:
                 silent_error(error_message)
                 raise RateLimitException(error_message)
-            elif status in [400, 403, 404]:
+            elif status in [400, 403]:
                 error(error_message)
+                raise HTTPException(error_message)
+            elif status == 404:
+                error(error_message)
+                raise NotFoundException(error_message)
             else:
                 silent_error(error_message)
             raise HTTPException(error_message)
@@ -149,7 +156,7 @@ retry_config = {
     'wait': lambda attempt_number: wait_random_exponential(
         attempt_number, multiplier=1, max_wait=10
     ),
-    'retry': retry_if_exception_type((HTTPException,)),
+    'retry': lambda e: isinstance(e, HTTPException) and not isinstance(e, NotFoundException),
     'before_sleep': lambda retry_state: info(
         f"Sleeping before next retry ({retry_state['attempt_number']})"
     )
