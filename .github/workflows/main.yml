@@ -40,4 +40,4 @@ jobs:
             ${{ runner.os }}-cloudflare-cache-
       
       - name: Cloudflare Gateway Zero Trust 
-        run: python -m src leave
+        run: python -m src run
