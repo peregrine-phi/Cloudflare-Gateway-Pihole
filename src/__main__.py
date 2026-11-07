@@ -59,7 +59,11 @@ class CloudflareManager:
             list(domains[i:i + LIST_CAPACITY])
             for i in range(0, len(domains), LIST_CAPACITY)
         ]
-        current_lists = utils.get_current_lists(self.cache, self.allow_list_name)
+        current_lists = [
+            lst
+            for lst in utils.get_current_lists(self.cache, self.allow_list_name)
+            if lst["name"].startswith(self.allow_list_name)
+        ]
         by_name = {lst["name"]: lst for lst in current_lists}
         new_list_ids = []
 
@@ -105,14 +109,19 @@ class CloudflareManager:
                 except NotFoundException:
                     pass
             for name, lst in by_name.items():
+                removed = False
                 try:
                     delete_list(lst["id"])
-                except (NotFoundException, HTTPException):
-                    pass
-                self.cache["lists"] = [
-                    item for item in self.cache["lists"] if item["id"] != lst["id"]
-                ]
-                self.cache["mapping"].pop(lst["id"], None)
+                    removed = True
+                except NotFoundException:
+                    removed = True
+                except HTTPException as exc:
+                    silent_error(f"Could not delete surplus allow list {name}: {exc}")
+                if removed:
+                    self.cache["lists"] = [
+                        item for item in self.cache["lists"] if item["id"] != lst["id"]
+                    ]
+                    self.cache["mapping"].pop(lst["id"], None)
             return
 
         traffic = self._list_traffic(new_list_ids)
@@ -145,17 +154,21 @@ class CloudflareManager:
 
         # Remove leftover allow lists only after the rule stops referencing them.
         for name, lst in by_name.items():
+            removed = False
             try:
                 delete_list(lst["id"])
                 info(f"Deleted surplus allow list: {name}")
+                removed = True
             except NotFoundException:
                 info(f"Surplus allow list already gone: {name}")
+                removed = True
             except HTTPException as exc:
                 silent_error(f"Could not delete surplus allow list {name}: {exc}")
-            self.cache["lists"] = [
-                item for item in self.cache["lists"] if item["id"] != lst["id"]
-            ]
-            self.cache["mapping"].pop(lst["id"], None)
+            if removed:
+                self.cache["lists"] = [
+                    item for item in self.cache["lists"] if item["id"] != lst["id"]
+                ]
+                self.cache["mapping"].pop(lst["id"], None)
 
         # Remove older numbered allow rules created by previous versions.
         for rule in get_rules(self.allow_rule_prefix):

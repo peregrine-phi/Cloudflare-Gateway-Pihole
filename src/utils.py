@@ -62,19 +62,29 @@ def save_cache(cache):
 
 
 def get_current_lists(cache, list_name):
-    if cache["lists"]:
-        return cache["lists"]
+    cached = [lst for lst in cache["lists"] if lst["name"].startswith(list_name)]
+    if cached:
+        return cached
+
     current_lists = get_lists(list_name)
-    cache["lists"] = current_lists
+    existing_ids = {lst["id"] for lst in cache["lists"]}
+    for lst in current_lists:
+        if lst["id"] not in existing_ids:
+            cache["lists"].append(lst)
     save_cache(cache)
     return current_lists
 
 
 def get_current_rules(cache, rule_name):
-    if cache["rules"]:
-        return cache["rules"]
+    cached = [rule for rule in cache["rules"] if rule["name"].startswith(rule_name)]
+    if cached:
+        return cached
+
     current_rules = get_rules(rule_name)
-    cache["rules"] = current_rules
+    existing_ids = {rule["id"] for rule in cache["rules"]}
+    for rule in current_rules:
+        if rule["id"] not in existing_ids:
+            cache["rules"].append(rule)
     save_cache(cache)
     return current_rules
 
