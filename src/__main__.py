@@ -12,7 +12,7 @@ from src.requests import NotFoundException, HTTPException
 MAX_GATEWAY_DOMAINS = int(os.getenv("MAX_GATEWAY_DOMAINS", "300000"))
 MAX_GATEWAY_LISTS = int(os.getenv("MAX_GATEWAY_LISTS", "300"))
 LIST_CAPACITY = int(os.getenv("GATEWAY_LIST_CAPACITY", "1000"))
-ALLOW_RULE_CHUNK = int(os.getenv("ALLOW_RULE_CHUNK", "2000"))
+ALLOW_LIST_PREFIX = "AdAllow-DNS-Filters"
 BLOCK_PRECEDENCE = 1000
 ALLOW_PRECEDENCE = 900
 ENABLE_SNI_FILTER = (os.getenv("ENABLE_SNI_FILTER") or "").strip().lower() in (
@@ -28,6 +28,7 @@ class CloudflareManager:
         self.rule_name = f"[{prefix}] Block Ads"
         self.sni_rule_name = f"[{prefix}] Block Ads (SNI)"
         self.allow_rule_prefix = f"[{prefix}] Allow"
+        self.allow_list_name = f"[{ALLOW_LIST_PREFIX}]"
         self.cache = utils.load_cache()
 
     @staticmethod
@@ -35,56 +36,136 @@ class CloudflareManager:
         return " or ".join(f"any({field}[*] in ${lst})" for lst in list_ids)
 
     @staticmethod
-    def _check_limits(domains):
+    def _check_limits(domains, allow_domains=()):
         if len(domains) > MAX_GATEWAY_DOMAINS:
             error(
                 f"Blocklist has {len(domains)} domains, exceeding the configured "
                 f"limit of {MAX_GATEWAY_DOMAINS} (MAX_GATEWAY_DOMAINS)."
             )
 
-        required_lists = (len(domains) + LIST_CAPACITY - 1) // LIST_CAPACITY
+        block_lists = (len(domains) + LIST_CAPACITY - 1) // LIST_CAPACITY
+        allow_lists = (len(allow_domains) + LIST_CAPACITY - 1) // LIST_CAPACITY
+        required_lists = block_lists + allow_lists
         if required_lists > MAX_GATEWAY_LISTS:
             error(
-                f"Blocklist needs {required_lists} Gateway lists "
-                f"({len(domains)} domains / {LIST_CAPACITY} per list), but only "
+                f"Blocklist needs {block_lists} Gateway lists and the allowlist "
+                f"needs {allow_lists} ({required_lists} total), but only "
                 f"{MAX_GATEWAY_LISTS} lists are allowed (MAX_GATEWAY_LISTS). "
                 f"Reduce ADLIST_URLS or raise the limit if your plan supports more."
             )
 
     def _sync_allow_rules(self, domains):
-        existing = {rule["name"]: rule for rule in get_rules(self.allow_rule_prefix)}
-        desired_names = set()
         chunks = [
-            domains[i:i + ALLOW_RULE_CHUNK]
-            for i in range(0, len(domains), ALLOW_RULE_CHUNK)
+            list(domains[i:i + LIST_CAPACITY])
+            for i in range(0, len(domains), LIST_CAPACITY)
         ]
+        current_lists = utils.get_current_lists(self.cache, self.allow_list_name)
+        by_name = {lst["name"]: lst for lst in current_lists}
+        new_list_ids = []
 
         for index, chunk in enumerate(chunks, start=1):
-            name = f"{self.allow_rule_prefix} - {index:03d}"
-            desired_names.add(name)
-            traffic = "any(dns.domains[*] in {" + " ".join(f'"{d}"' for d in chunk) + "})"
-            rule = existing.get(name)
+            name = f"{self.allow_list_name} - {index:03d}"
+            existing = by_name.pop(name, None)
 
-            if rule is None:
-                create_rule(name, traffic, ALLOW_PRECEDENCE + index, action="allow")
-                info(f"Created allow rule: {name} ({len(chunk)} domains)")
-            elif rule.get("traffic") != traffic:
+            if existing is None:
+                lst = create_list(name, chunk)
+                info(f"Created allow list: {name} ({len(chunk)} domains)")
+                self.cache["lists"].append(lst)
+                self.cache["mapping"][lst["id"]] = chunk
+                new_list_ids.append(lst["id"])
+                continue
+
+            items = utils.get_list_items_cached(self.cache, existing["id"])
+            if items is not None:
+                items = set(items)
+                remove_items = items - set(chunk)
+                add_items = set(chunk) - items
+                if not remove_items and not add_items:
+                    new_list_ids.append(existing["id"])
+                    continue
                 try:
-                    update_rule(
-                        name, rule["id"], traffic, ALLOW_PRECEDENCE + index, action="allow"
-                    )
-                    info(f"Updated allow rule: {name} ({len(chunk)} domains)")
+                    update_list(existing["id"], remove_items, add_items)
+                    info(f"Updated allow list: {name} ({len(chunk)} domains)")
+                    self.cache["mapping"][existing["id"]] = chunk
+                    new_list_ids.append(existing["id"])
+                    continue
                 except NotFoundException:
-                    create_rule(name, traffic, ALLOW_PRECEDENCE + index, action="allow")
-                    info(f"Recreated allow rule: {name} ({len(chunk)} domains)")
+                    pass
 
-        for name, rule in existing.items():
-            if name not in desired_names:
+            lst = create_list(name, chunk)
+            info(f"Recreated allow list: {name} ({len(chunk)} domains)")
+            self.cache["lists"].append(lst)
+            self.cache["mapping"][lst["id"]] = chunk
+            new_list_ids.append(lst["id"])
+
+        if not new_list_ids:
+            for rule in get_rules(self.allow_rule_prefix):
                 try:
                     delete_rule(rule["id"])
-                    info(f"Deleted stale allow rule: {name}")
                 except NotFoundException:
-                    info(f"Stale allow rule already gone: {name}")
+                    pass
+            for name, lst in by_name.items():
+                try:
+                    delete_list(lst["id"])
+                except (NotFoundException, HTTPException):
+                    pass
+                self.cache["lists"] = [
+                    item for item in self.cache["lists"] if item["id"] != lst["id"]
+                ]
+                self.cache["mapping"].pop(lst["id"], None)
+            return
+
+        traffic = self._list_traffic(new_list_ids)
+        existing_rule = next(
+            (
+                rule
+                for rule in get_rules(self.allow_rule_prefix)
+                if rule["name"] == self.allow_rule_prefix
+            ),
+            None,
+        )
+        if existing_rule is None:
+            create_rule(self.allow_rule_prefix, traffic, ALLOW_PRECEDENCE, action="allow")
+            info(f"Created allow rule: {self.allow_rule_prefix}")
+        elif existing_rule.get("traffic") != traffic:
+            try:
+                update_rule(
+                    self.allow_rule_prefix,
+                    existing_rule["id"],
+                    traffic,
+                    ALLOW_PRECEDENCE,
+                    action="allow",
+                )
+                info(f"Updated allow rule: {self.allow_rule_prefix}")
+            except NotFoundException:
+                create_rule(
+                    self.allow_rule_prefix, traffic, ALLOW_PRECEDENCE, action="allow"
+                )
+                info(f"Recreated allow rule: {self.allow_rule_prefix}")
+
+        # Remove leftover allow lists only after the rule stops referencing them.
+        for name, lst in by_name.items():
+            try:
+                delete_list(lst["id"])
+                info(f"Deleted surplus allow list: {name}")
+            except NotFoundException:
+                info(f"Surplus allow list already gone: {name}")
+            except HTTPException as exc:
+                silent_error(f"Could not delete surplus allow list {name}: {exc}")
+            self.cache["lists"] = [
+                item for item in self.cache["lists"] if item["id"] != lst["id"]
+            ]
+            self.cache["mapping"].pop(lst["id"], None)
+
+        # Remove older numbered allow rules created by previous versions.
+        for rule in get_rules(self.allow_rule_prefix):
+            if rule["name"] == self.allow_rule_prefix:
+                continue
+            try:
+                delete_rule(rule["id"])
+                info(f"Deleted stale allow rule: {rule['name']}")
+            except NotFoundException:
+                pass
 
     def _sync_sni_rule(self, list_ids):
         if not list_ids:
@@ -132,7 +213,7 @@ class CloudflareManager:
     def update_resources(self):
         converter = DomainConverter()
         domains_to_block = converter.process_urls()
-        self._check_limits(domains_to_block)
+        self._check_limits(domains_to_block, converter.whitelist_domains)
         
         current_lists = utils.get_current_lists(self.cache, self.list_name)
         current_rules = utils.get_current_rules(self.cache, self.rule_name)
@@ -199,8 +280,12 @@ class CloudflareManager:
                     continue
                 list_id_to_domains[lst["id"]] = set(items)
 
-            # Refresh current_lists after possible stale list removal
-            current_lists = self.cache["lists"]
+            # Refresh current_lists after possible stale list removal. Keep only
+            # block lists: the cache also holds allow lists under a different prefix.
+            current_lists = [
+                lst for lst in self.cache["lists"]
+                if lst["name"].startswith(self.list_name)
+            ]
 
             # Mapping domain to its current list_id
             domain_to_list_id = {domain: lst_id for lst_id, domains in list_id_to_domains.items() for domain in domains}
@@ -365,6 +450,20 @@ class CloudflareManager:
                 del self.cache["mapping"][lst["id"]]
 
             # Save updated cache
+            utils.save_cache(self.cache)
+
+        # Delete allow lists (the allow rule was matched by the block prefix above).
+        for lst in utils.get_current_lists(self.cache, self.allow_list_name):
+            try:
+                delete_list(lst["id"])
+                info(f"Deleted allow list: {lst['name']}")
+            except NotFoundException:
+                info(f"Allow list already gone: {lst['name']}")
+
+            self.cache["lists"] = [
+                item for item in self.cache["lists"] if item["id"] != lst["id"]
+            ]
+            self.cache["mapping"].pop(lst["id"], None)
             utils.save_cache(self.cache)
 
 

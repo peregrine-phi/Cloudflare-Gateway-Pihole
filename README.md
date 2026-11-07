@@ -21,7 +21,7 @@
 
 * You must delete the lists of other scripts.
 
-* Cloudflare Gateway's free plan allows **300 lists × 1,000 entries** (about **300k domains**). The official account-limits page may still list 100 lists — verify against your account. The script validates `MAX_GATEWAY_DOMAINS` and `MAX_GATEWAY_LISTS` (default 300) before uploading and stops if they are exceeded.
+* Cloudflare Gateway's free plan allows **300 lists × 1,000 entries** (about **300k domains**). The official account-limits page may still list 100 lists — verify against your account. The script validates `MAX_GATEWAY_DOMAINS` and `MAX_GATEWAY_LISTS` (default 300) before uploading and stops if they are exceeded. The Allow rule uses its own list(s) and counts toward the same quota.
 
 * Optional: set `ENABLE_SNI_FILTER=true` (Actions variable or env) to also create an SNI-based block rule that resists DNS bypass. It requires Cloudflare Gateway proxy for TCP and devices connected through WARP.
 
