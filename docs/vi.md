@@ -83,7 +83,7 @@ Tạo `CF_API_TOKEN` giống như sau:
 
 ### Chú ý  
 ---
-* `Giới hạn` của `Cloudflare Gateway Zero Trust` (gói Standard) hiện là **100 danh sách × 1.000 mục**, tức khoảng **100k tên miền**. Script sẽ kiểm tra `MAX_GATEWAY_DOMAINS` và `MAX_GATEWAY_LISTS` trước khi tải lên và dừng nếu vượt quá.
+* `Giới hạn` của `Cloudflare Gateway Zero Trust` (gói miễn phí) là **300 danh sách × 1.000 mục**, tức khoảng **300k tên miền**. Script sẽ kiểm tra `MAX_GATEWAY_DOMAINS` và `MAX_GATEWAY_LISTS` (mặc định 300) trước khi tải lên và dừng nếu vượt quá.
 
 * Các bạn đã tải các danh sách bộ lọc bằng script khác thì nên xoá đi bằng tính năng xoá của script đã up hoặc xoá tay
 

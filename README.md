@@ -21,7 +21,9 @@
 
 * You must delete the lists of other scripts.
 
-* Cloudflare Gateway limits how many lists you can create (currently 100 lists × 1,000 entries on Standard plans, about 100k domains). The script checks the required list count before uploading and stops with a clear error if the configured adlists exceed it. Only raise `MAX_GATEWAY_LISTS` if your plan supports more lists.
+* Cloudflare Gateway's free plan allows **300 lists × 1,000 entries** (about **300k domains**). The official account-limits page may still list 100 lists — verify against your account. The script validates `MAX_GATEWAY_DOMAINS` and `MAX_GATEWAY_LISTS` (default 300) before uploading and stops if they are exceeded.
+
+* Optional: set `ENABLE_SNI_FILTER=true` (Actions variable or env) to also create an SNI-based block rule that resists DNS bypass. It requires Cloudflare Gateway proxy for TCP and devices connected through WARP.
 
 * To add a separate white list inviting visit [Cloudflare-Gateway-Allow](https://github.com/luxysiv/Cloudflare-Gateway-Allow)
 
@@ -169,7 +171,7 @@ If you encounter issues during setup, you can refer to [termux-change-repo](http
 
 ### Note
 ---
-* The **limit** of `Cloudflare Gateway Zero Trust` is **100 lists × 1,000 entries** on Standard plans (about **100k domains**). The script validates both `MAX_GATEWAY_DOMAINS` and `MAX_GATEWAY_LISTS` before uploading and stops if they are exceeded.
+* The **limit** of `Cloudflare Gateway Zero Trust` on the free plan is **300 lists × 1,000 entries** (about **300k domains**). The script validates both `MAX_GATEWAY_DOMAINS` and `MAX_GATEWAY_LISTS` (default 300) before uploading and stops if they are exceeded.
 
 * If you have uploaded lists using another script, you should delete them using the delete feature of the uploaded script or delete them manually.
 

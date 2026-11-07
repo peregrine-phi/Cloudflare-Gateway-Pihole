@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import hashlib
 import http.client
 from src import ids_pattern, CACHE_FILE
 from src.cloudflare import get_lists, get_rules, get_list_items
@@ -91,6 +92,22 @@ def get_list_items_cached(cache, list_id):
     cache["mapping"][list_id] = items
     save_cache(cache)
     return items
+
+
+def compute_domain_hash(domains) -> str:
+    return hashlib.sha256("\n".join(sorted(domains)).encode()).hexdigest()
+
+
+def get_cached_domain_hash(cache, prefix):
+    entry = cache.get("domain_hashes", {}).get(prefix)
+    return entry["hash"] if entry else None
+
+
+def set_cached_domain_hash(cache, prefix, domains) -> None:
+    cache.setdefault("domain_hashes", {})[prefix] = {
+        "hash": compute_domain_hash(domains),
+        "count": len(domains),
+    }
 
 
 def safe_sort_key(list_item):

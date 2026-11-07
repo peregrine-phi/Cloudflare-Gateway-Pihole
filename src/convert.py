@@ -38,23 +38,44 @@ def extract_exception_domains(content: str, domains: set[str]) -> None:
         if line.startswith("@@"):
             _add_domain_line(line, domains, include_exceptions=True)
 
+_LOCAL_BLOCK_IPS = ("127.0.0.1", "0.0.0.0")
+
+
 def _add_domain_line(line: str, domains: set[str], include_exceptions: bool) -> None:
+    line = line.strip()
     if line.startswith(("#", "!", "/")) or line == "":
         return
+
+    # Hosts-file entries are only valid for local blocking addresses.
+    # Skip entries mapped to real IPs, e.g. "110.43.121.13 bigota.d.miui.com".
+    parts = line.split()
+    if len(parts) >= 2 and ip_pattern.match(parts[0]):
+        if parts[0] not in _LOCAL_BLOCK_IPS:
+            return
 
     if line.startswith("@@"):
         if not include_exceptions:
             return
         line = line[2:]
 
-    cleaned_line = line.lower().strip().split("#")[0].split("^")[0].replace("\r", "")
+    cleaned_line = line.lower().split("#")[0].split("^")[0].replace("\r", "")
     domain = replace_pattern.sub("", cleaned_line, count=1)
+
+    # Strip a residual wildcard, e.g. "*.adtech.de" or "||*.foo.com".
+    if domain.startswith("*."):
+        domain = domain[2:]
+
+    # Single-label names (localhost, broadcasthost, ...) are not internet domains.
+    if "." not in domain:
+        return
+
     try:
         domain = domain.encode("idna").decode("utf-8", "replace")
-        if domain_pattern.match(domain) and not ip_pattern.match(domain):
-            domains.add(domain)
-    except Exception:
-        pass
+    except UnicodeError:
+        return
+
+    if domain_pattern.match(domain) and not ip_pattern.match(domain):
+        domains.add(domain)
             
 def remove_subdomains_if_higher(domains: set[str]) -> set[str]:
     top_level_domains = set()

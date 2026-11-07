@@ -29,7 +29,7 @@ def update_list(list_id, remove_items, append_items):
     return response["result"]
 
 @retry(**retry_config)
-def create_rule(rule_name, traffic, priority=1000, action="block"):
+def create_rule(rule_name, traffic, priority=1000, action="block", filters=None):
     endpoint = "/rules"
     data = {
         "name": rule_name,
@@ -39,11 +39,13 @@ def create_rule(rule_name, traffic, priority=1000, action="block"):
         "traffic": traffic,
         "enabled": True,
     }
+    if filters:
+        data["filters"] = list(filters)
     status, response = cloudflare_gateway_request("POST", endpoint, body=json.dumps(data))
     return response["result"]
 
 @retry(**retry_config)
-def update_rule(rule_name, rule_id, traffic, priority=1000, action="block"):
+def update_rule(rule_name, rule_id, traffic, priority=1000, action="block", filters=None):
     endpoint = f"/rules/{rule_id}"
     data = {
         "name": rule_name,
@@ -53,6 +55,8 @@ def update_rule(rule_name, rule_id, traffic, priority=1000, action="block"):
         "traffic": traffic,
         "enabled": True,
     }
+    if filters:
+        data["filters"] = list(filters)
     status, response = cloudflare_gateway_request("PUT", endpoint, body=json.dumps(data))
     return response["result"]
 

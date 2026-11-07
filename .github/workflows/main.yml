@@ -24,6 +24,7 @@ jobs:
       WHITELIST_URLS: ${{ vars.WHITELIST_URLS }}
       DYNAMIC_BLACKLIST: ${{ vars.DYNAMIC_BLACKLIST }}
       DYNAMIC_WHITELIST: ${{ vars.DYNAMIC_WHITELIST }}
+      ENABLE_SNI_FILTER: ${{ vars.ENABLE_SNI_FILTER }}
 
     steps:
       - name: Checkout Repository

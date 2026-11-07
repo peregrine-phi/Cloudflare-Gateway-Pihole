@@ -10,23 +10,29 @@ from src.requests import NotFoundException, HTTPException
 
 # Cloudflare Gateway limits (override via environment variables when your plan differs).
 MAX_GATEWAY_DOMAINS = int(os.getenv("MAX_GATEWAY_DOMAINS", "300000"))
-MAX_GATEWAY_LISTS = int(os.getenv("MAX_GATEWAY_LISTS", "100"))
+MAX_GATEWAY_LISTS = int(os.getenv("MAX_GATEWAY_LISTS", "300"))
 LIST_CAPACITY = int(os.getenv("GATEWAY_LIST_CAPACITY", "1000"))
 ALLOW_RULE_CHUNK = int(os.getenv("ALLOW_RULE_CHUNK", "2000"))
 BLOCK_PRECEDENCE = 1000
 ALLOW_PRECEDENCE = 900
+ENABLE_SNI_FILTER = (os.getenv("ENABLE_SNI_FILTER") or "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 class CloudflareManager:
     def __init__(self, prefix):
         self.list_name = f"[{prefix}]"
         self.rule_name = f"[{prefix}] Block Ads"
+        self.sni_rule_name = f"[{prefix}] Block Ads (SNI)"
         self.allow_rule_prefix = f"[{prefix}] Allow"
         self.cache = utils.load_cache()
 
     @staticmethod
-    def _list_traffic(list_ids):
-        return " or ".join(f"any(dns.domains[*] in ${lst})" for lst in list_ids)
+    def _list_traffic(list_ids, field="dns.domains"):
+        return " or ".join(f"any({field}[*] in ${lst})" for lst in list_ids)
 
     @staticmethod
     def _check_limits(domains):
@@ -80,6 +86,49 @@ class CloudflareManager:
                 except NotFoundException:
                     info(f"Stale allow rule already gone: {name}")
 
+    def _sync_sni_rule(self, list_ids):
+        if not list_ids:
+            return
+        traffic = self._list_traffic(list_ids, field="net.sni.domains")
+        existing = next(
+            (
+                rule
+                for rule in get_rules(self.sni_rule_name)
+                if rule["name"] == self.sni_rule_name
+            ),
+            None,
+        )
+
+        if existing is None:
+            create_rule(self.sni_rule_name, traffic, BLOCK_PRECEDENCE, filters=["l4"])
+            info(f"Created SNI rule: {self.sni_rule_name}")
+            return
+        if existing.get("traffic") == traffic:
+            silent_error(f"Skipping SNI rule update (unchanged): {self.sni_rule_name}")
+            return
+        try:
+            update_rule(
+                self.sni_rule_name,
+                existing["id"],
+                traffic,
+                BLOCK_PRECEDENCE,
+                filters=["l4"],
+            )
+            info(f"Updated SNI rule: {self.sni_rule_name}")
+        except NotFoundException:
+            create_rule(self.sni_rule_name, traffic, BLOCK_PRECEDENCE, filters=["l4"])
+            info(f"Recreated SNI rule: {self.sni_rule_name}")
+
+    def _delete_sni_rule(self):
+        for rule in get_rules(self.sni_rule_name):
+            if rule["name"] != self.sni_rule_name:
+                continue
+            try:
+                delete_rule(rule["id"])
+                info(f"Deleted disabled SNI rule: {rule['name']}")
+            except NotFoundException:
+                pass
+
     def update_resources(self):
         converter = DomainConverter()
         domains_to_block = converter.process_urls()
@@ -106,6 +155,27 @@ class CloudflareManager:
             else:
                 kept_lists.append(lst)
 
+        def list_index(lst):
+            try:
+                return int(lst["name"].split("-")[-1])
+            except ValueError:
+                return 0
+
+        kept_lists.sort(key=list_index)
+        kept_indexes = [list_index(lst) for lst in kept_lists]
+
+        # Fast path: skip all list reads/writes when the desired domain set is
+        # unchanged and every required list is present.
+        desired_hash = utils.compute_domain_hash(domains_to_block)
+        cached_hash = utils.get_cached_domain_hash(self.cache, self.list_name)
+        lists_complete = (
+            len(kept_lists) == needed_lists
+            and kept_indexes == list(range(1, needed_lists + 1))
+        )
+        use_fast_path = (
+            cached_hash == desired_hash and lists_complete and not surplus_lists
+        )
+
         for lst in surplus_lists:
             self.cache["lists"] = [
                 item for item in self.cache["lists"] if item["id"] != lst["id"]
@@ -113,96 +183,105 @@ class CloudflareManager:
             self.cache["mapping"].pop(lst["id"], None)
         current_lists = kept_lists
 
-        # Mapping list_id to current domains in that list
-        list_id_to_domains = {}
-        for lst in current_lists:
-            items = utils.get_list_items_cached(self.cache, lst["id"])
-            if items is None:
-                info(f"Skipping stale list: {lst['name']} (not found on Cloudflare)")
-                continue
-            list_id_to_domains[lst["id"]] = set(items)
+        if use_fast_path:
+            info(
+                f"No domain changes detected for {self.list_name} "
+                f"({len(domains_to_block)} domains) — skipping list sync"
+            )
+            new_list_ids = [lst["id"] for lst in kept_lists]
+        else:
+            # Mapping list_id to current domains in that list
+            list_id_to_domains = {}
+            for lst in current_lists:
+                items = utils.get_list_items_cached(self.cache, lst["id"])
+                if items is None:
+                    info(f"Skipping stale list: {lst['name']} (not found on Cloudflare)")
+                    continue
+                list_id_to_domains[lst["id"]] = set(items)
 
-        # Refresh current_lists after possible stale list removal
-        current_lists = self.cache["lists"]
+            # Refresh current_lists after possible stale list removal
+            current_lists = self.cache["lists"]
 
-        # Mapping domain to its current list_id
-        domain_to_list_id = {domain: lst_id for lst_id, domains in list_id_to_domains.items() for domain in domains}
+            # Mapping domain to its current list_id
+            domain_to_list_id = {domain: lst_id for lst_id, domains in list_id_to_domains.items() for domain in domains}
 
-        # Calculate remaining domains 
-        remaining_domains = set(domains_to_block) - set(domain_to_list_id.keys())
+            # Calculate remaining domains
+            remaining_domains = set(domains_to_block) - set(domain_to_list_id.keys())
 
-        # Create a dictionary for list names to keep track of missing indexes
-        list_name_to_id = {lst["name"]: lst["id"] for lst in current_lists}
-        existing_indexes = []
-        for name in list_name_to_id:
-            try:
-                existing_indexes.append(int(name.split("-")[-1]))
-            except ValueError:
-                continue
-        existing_indexes.sort()
+            # Create a dictionary for list names to keep track of missing indexes
+            list_name_to_id = {lst["name"]: lst["id"] for lst in current_lists}
+            existing_indexes = []
+            for name in list_name_to_id:
+                try:
+                    existing_indexes.append(int(name.split("-")[-1]))
+                except ValueError:
+                    continue
+            existing_indexes.sort()
 
-        # Determine the needed indexes
-        all_indexes = set(range(1, max(existing_indexes + [needed_lists]) + 1))
-        
-        # Process current lists and fill them with remaining domains
-        new_list_ids = []
-        for i in all_indexes:
-            list_name = f"{self.list_name} - {i:03d}"
-            if list_name in list_name_to_id:
-                list_id = list_name_to_id[list_name]
-                current_values = list_id_to_domains[list_id]
-                remove_items = current_values - set(domains_to_block)
-                chunk = current_values - remove_items
+            # Determine the needed indexes
+            all_indexes = set(range(1, max(existing_indexes + [needed_lists]) + 1))
 
-                new_items = []
-                if len(chunk) < LIST_CAPACITY:
-                    needed_items = LIST_CAPACITY - len(chunk)
-                    new_items = list(remaining_domains)[:needed_items]
-                    chunk.update(new_items)
-                    remaining_domains.difference_update(new_items)
+            # Process current lists and fill them with remaining domains
+            new_list_ids = []
+            for i in sorted(all_indexes):
+                list_name = f"{self.list_name} - {i:03d}"
+                if list_name in list_name_to_id:
+                    list_id = list_name_to_id[list_name]
+                    current_values = list_id_to_domains[list_id]
+                    remove_items = current_values - set(domains_to_block)
+                    chunk = current_values - remove_items
 
-                if remove_items or new_items:
-                    try:
-                        update_list(list_id, remove_items, new_items)
-                    except NotFoundException:
-                        info(f"List {list_name} no longer exists on Cloudflare, recreating...")
-                        new_items_full = list(chunk)
-                        available = LIST_CAPACITY - len(new_items_full)
-                        if available > 0:
-                            new_items_full += list(remaining_domains)[:available]
-                        remaining_domains.difference_update(new_items_full)
-                        if not new_items_full:
+                    new_items = []
+                    if len(chunk) < LIST_CAPACITY:
+                        needed_items = LIST_CAPACITY - len(chunk)
+                        new_items = list(remaining_domains)[:needed_items]
+                        chunk.update(new_items)
+                        remaining_domains.difference_update(new_items)
+
+                    if remove_items or new_items:
+                        try:
+                            update_list(list_id, remove_items, new_items)
+                        except NotFoundException:
+                            info(f"List {list_name} no longer exists on Cloudflare, recreating...")
+                            new_items_full = list(chunk)
+                            available = LIST_CAPACITY - len(new_items_full)
+                            if available > 0:
+                                new_items_full += list(remaining_domains)[:available]
+                            remaining_domains.difference_update(new_items_full)
+                            if not new_items_full:
+                                continue
+                            lst = create_list(list_name, new_items_full)
+                            self.cache["lists"].append(lst)
+                            self.cache["mapping"][lst["id"]] = new_items_full
+                            new_list_ids.append(lst["id"])
                             continue
-                        lst = create_list(list_name, new_items_full)
-                        self.cache["lists"].append(lst)
-                        self.cache["mapping"][lst["id"]] = new_items_full
-                        new_list_ids.append(lst["id"])
-                        continue
-                    info(
-                        f"Updated list: {list_name} "
-                        f"| Added {len(new_items)} domains,"
-                        f"Removed {len(remove_items)} domains "
-                        f"| Total domains in list: {len(chunk)}"
-                    )
-                    self.cache["mapping"][list_id] = list(chunk)
+                        info(
+                            f"Updated list: {list_name} "
+                            f"| Added {len(new_items)} domains,"
+                            f"Removed {len(remove_items)} domains "
+                            f"| Total domains in list: {len(chunk)}"
+                        )
+                        self.cache["mapping"][list_id] = list(chunk)
+                    else:
+                        silent_error(
+                            f"Skipped update list: {list_name} "
+                            f"| Total domains in list: {len(chunk)}"
+                        )
+
+                    new_list_ids.append(list_id)
                 else:
-                    silent_error(
-                        f"Skipped update list: {list_name} "
-                        f"| Total domains in list: {len(chunk)}"
-                    )
-                
-                new_list_ids.append(list_id)
-            else:
-                # Create new lists for remaining domains
-                if remaining_domains:
-                    needed_items = min(LIST_CAPACITY, len(remaining_domains))
-                    new_items = list(remaining_domains)[:needed_items]
-                    remaining_domains.difference_update(new_items)
-                    lst = create_list(list_name, new_items)
-                    info(f"Created list: {lst['name']} with {len(new_items)} domains")
-                    self.cache["lists"].append(lst)
-                    self.cache["mapping"][lst["id"]] = new_items
-                    new_list_ids.append(lst["id"])
+                    # Create new lists for remaining domains
+                    if remaining_domains:
+                        needed_items = min(LIST_CAPACITY, len(remaining_domains))
+                        new_items = list(remaining_domains)[:needed_items]
+                        remaining_domains.difference_update(new_items)
+                        lst = create_list(list_name, new_items)
+                        info(f"Created list: {lst['name']} with {len(new_items)} domains")
+                        self.cache["lists"].append(lst)
+                        self.cache["mapping"][lst["id"]] = new_items
+                        new_list_ids.append(lst["id"])
+
+            utils.set_cached_domain_hash(self.cache, self.list_name, domains_to_block)
 
         # Update the rule with the new list IDs
         cgp_rule = next((rule for rule in current_rules if rule["name"] == self.rule_name), None)
@@ -231,6 +310,12 @@ class CloudflareManager:
         # Allow rules take precedence over the block rule, so whitelisted
         # subdomains can be exempted even when their parent domain is blocked.
         self._sync_allow_rules(converter.whitelist_domains)
+
+        # Optional SNI (L4) rule, requires WARP with TCP proxy enabled.
+        if ENABLE_SNI_FILTER:
+            self._sync_sni_rule(new_list_ids)
+        else:
+            self._delete_sni_rule()
 
         # Now that the block rule no longer references the surplus lists,
         # they can be deleted safely.

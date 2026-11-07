@@ -16,7 +16,18 @@ class HTTPException(Exception):
     pass
 
 class RateLimitException(HTTPException):
-    pass
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def parse_retry_after(value):
+    if not value:
+        return None
+    try:
+        return max(0, int(value.strip()))
+    except (TypeError, ValueError):
+        return None
 
 class NotFoundException(HTTPException):
     pass
@@ -68,7 +79,10 @@ def cloudflare_gateway_request(
             )
             if status == 429:
                 silent_error(error_message)
-                raise RateLimitException(error_message)
+                raise RateLimitException(
+                    error_message,
+                    retry_after=parse_retry_after(response.getheader("Retry-After")),
+                )
             elif status == 400:
                 silent_error(error_message)
                 raise BadRequestException(error_message)
@@ -123,9 +137,9 @@ def retry(stop=None, wait=None, retry=None, after=None, before_sleep=None):
                     return func(*args, **kwargs)
                 except RateLimitException as e:
                     if not first_rate_limit_encountered:
-                        # First time meeting 429, delay 2 minutes
+                        # First 429: honour Cloudflare's Retry-After when present.
                         first_rate_limit_encountered = True
-                        wait_time = 120
+                        wait_time = e.retry_after or 120
                         info(f"Meet rate limit from Cloudflare. Sleeping for {wait_time} seconds.")
                         time.sleep(wait_time)
                     else:
@@ -134,7 +148,7 @@ def retry(stop=None, wait=None, retry=None, after=None, before_sleep=None):
                             raise
                         if before_sleep:
                             before_sleep({'attempt_number': attempt_number})
-                        wait_time = wait(attempt_number) if wait else 1
+                        wait_time = e.retry_after or (wait(attempt_number) if wait else 1)
                         time.sleep(wait_time)
                 except Exception as e:
                     if retry and not retry(e):
