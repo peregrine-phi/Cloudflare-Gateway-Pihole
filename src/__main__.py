@@ -6,7 +6,7 @@ from src.cloudflare import (
     create_list, update_list, create_rule, 
     update_rule, delete_list, delete_rule, get_rules
 )
-from src.requests import NotFoundException
+from src.requests import NotFoundException, HTTPException
 
 # Cloudflare Gateway limits (override via environment variables when your plan differs).
 MAX_GATEWAY_DOMAINS = int(os.getenv("MAX_GATEWAY_DOMAINS", "300000"))
@@ -90,26 +90,28 @@ class CloudflareManager:
 
         needed_lists = (len(domains_to_block) + LIST_CAPACITY - 1) // LIST_CAPACITY
 
-        # Drop lists beyond the current requirement so shrinking the blocklist
-        # also frees Cloudflare list slots.
-        for lst in list(current_lists):
+        # Lists beyond the current requirement must be removed, but Cloudflare
+        # refuses to delete a list still referenced by a policy. Keep their IDs,
+        # detach them from the block rule first, and delete them afterwards.
+        surplus_lists = []
+        kept_lists = []
+        for lst in current_lists:
             try:
                 index = int(lst["name"].split("-")[-1])
             except ValueError:
+                kept_lists.append(lst)
                 continue
-            if index <= needed_lists:
-                continue
-            try:
-                delete_list(lst["id"])
-            except NotFoundException:
-                info(f"Surplus list already gone: {lst['name']}")
+            if index > needed_lists:
+                surplus_lists.append(lst)
             else:
-                info(f"Deleted surplus list: {lst['name']}")
+                kept_lists.append(lst)
+
+        for lst in surplus_lists:
             self.cache["lists"] = [
                 item for item in self.cache["lists"] if item["id"] != lst["id"]
             ]
             self.cache["mapping"].pop(lst["id"], None)
-        current_lists = self.cache["lists"]
+        current_lists = kept_lists
 
         # Mapping list_id to current domains in that list
         list_id_to_domains = {}
@@ -229,6 +231,17 @@ class CloudflareManager:
         # Allow rules take precedence over the block rule, so whitelisted
         # subdomains can be exempted even when their parent domain is blocked.
         self._sync_allow_rules(converter.whitelist_domains)
+
+        # Now that the block rule no longer references the surplus lists,
+        # they can be deleted safely.
+        for lst in surplus_lists:
+            try:
+                delete_list(lst["id"])
+                info(f"Deleted surplus list: {lst['name']}")
+            except NotFoundException:
+                info(f"Surplus list already gone: {lst['name']}")
+            except HTTPException as exc:
+                silent_error(f"Could not delete surplus list {lst['name']}: {exc}")
 
         utils.save_cache(self.cache)
 
