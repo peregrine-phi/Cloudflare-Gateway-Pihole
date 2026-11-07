@@ -1,12 +1,13 @@
 """
-Sync ByteDance domain list from v2fly/domain-list-community.
+Sync ByteDance ad/tracking domain list from v2fly/domain-list-community.
 
 Usage:
     python scripts/sync_bytedance.py
 
 Fetches bytedance.txt and all referenced include files from the upstream
-v2fly/domain-list-community repository, cleans the domains, and writes
-them to lists/bytedance_blocklist.txt.
+v2fly/domain-list-community repository, keeps only entries tagged @ads or
+@telemetry (advertising/tracking), and writes them to
+lists/bytedance_blocklist.txt.
 """
 
 import re
@@ -18,6 +19,9 @@ REPO_RAW = "raw.githubusercontent.com"
 REPO_PATH = "/v2fly/domain-list-community/master/data"
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "lists", "bytedance_blocklist.txt")
 ENTRY_POINT = "bytedance"
+
+# Only keep domains upstream marks as advertising or telemetry/tracking.
+AD_TAGS = {"@ads", "@telemetry"}
 
 # Regex to extract a valid domain from a line
 DOMAIN_RE = re.compile(
@@ -69,13 +73,14 @@ def parse_and_resolve(name: str, visited: set[str], all_domains: set[str], secti
             continue
 
         # Clean the line: strip tags (@!cn, @ads, etc.) and full: prefix
-        cleaned = stripped.split("#")[0].strip()  # remove inline comments
-        cleaned = re.sub(r"\s+@\S+", "", cleaned).strip()  # remove @tags
+        body = stripped.split("#")[0].strip()  # remove inline comments
+        tags = set(re.findall(r"@[!a-zA-Z0-9-]+", body))
+        cleaned = re.sub(r"\s+@\S+", "", body).strip()  # remove @tags
         if cleaned.startswith("full:"):
             cleaned = cleaned[5:]
 
-        # Validate as domain
-        if DOMAIN_RE.match(cleaned):
+        # Keep only ad/tracking entries and validate as domain
+        if AD_TAGS & tags and DOMAIN_RE.match(cleaned):
             all_domains.add(cleaned.lower())
 
     # Recursively resolve includes
@@ -96,7 +101,7 @@ def main():
     # Sort domains
     sorted_domains = sorted(all_domains)
 
-    print(f"Resolved {len(visited)} files, collected {len(sorted_domains)} unique domains.")
+    print(f"Resolved {len(visited)} files, collected {len(sorted_domains)} ad/tracking domains.")
 
     # Write output
     output_path = os.path.abspath(OUTPUT_FILE)
@@ -104,9 +109,10 @@ def main():
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("# ========================================\n")
-        f.write("# ByteDance 全域名封锁列表\n")
+        f.write("# ByteDance 广告/追踪域名封锁列表\n")
         f.write("# 自动生成 - 请勿手动编辑\n")
         f.write(f"# 来源: https://github.com/v2fly/domain-list-community\n")
+        f.write(f"# 筛选: 仅保留上游标记 @ads / @telemetry 的域名\n")
         f.write(f"# 解析文件数: {len(visited)}\n")
         f.write(f"# 域名总数: {len(sorted_domains)}\n")
         f.write("# ========================================\n\n")
