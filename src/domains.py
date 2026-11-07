@@ -22,6 +22,7 @@ class DomainConverter:
         # Read adlist and whitelist URLs from environment and files
         self.adlist_urls = self.read_urls("ADLIST_URLS")
         self.whitelist_urls = self.read_urls("WHITELIST_URLS")
+        self.whitelist_domains = []
 
     def read_urls_from_file(self, filename):
         urls = []
@@ -134,5 +135,5 @@ class DomainConverter:
                 white_content += white_file.read()
         
         # Convert the collected content into a domain list
-        domains = convert.convert_to_domain_list(block_content, white_content)
+        domains, self.whitelist_domains = convert.convert_to_domain_list(block_content, white_content)
         return domains

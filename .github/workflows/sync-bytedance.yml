@@ -31,7 +31,7 @@ jobs:
           if git diff --quiet lists/bytedance_blocklist.txt; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            COUNT=$(grep -c '[a-z]' lists/bytedance_blocklist.txt || echo 0)
+            COUNT=$(grep -E '^[a-z0-9]' lists/bytedance_blocklist.txt | wc -l)
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           fi
