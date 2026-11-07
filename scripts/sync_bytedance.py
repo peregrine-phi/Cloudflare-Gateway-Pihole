@@ -12,6 +12,8 @@ lists/bytedance_blocklist.txt.
 
 import re
 import os
+import sys
+import time
 import http.client
 import ssl
 
@@ -30,20 +32,37 @@ DOMAIN_RE = re.compile(
 )
 
 
+class FetchError(Exception):
+    pass
+
+
 def fetch_file(name: str) -> str:
-    """Fetch a domain list file from the v2fly repo."""
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(REPO_RAW, context=ctx, timeout=15)
-    try:
-        url = f"{REPO_PATH}/{name}"
-        conn.request("GET", url)
-        resp = conn.getresponse()
-        if resp.status != 200:
-            print(f"  [WARN] Failed to fetch {name}: HTTP {resp.status}")
-            return ""
-        return resp.read().decode("utf-8")
-    finally:
-        conn.close()
+    """Fetch a domain list file from the v2fly repo, retrying transient errors."""
+    last_error = None
+    for attempt in range(1, 4):
+        ctx = ssl.create_default_context()
+        conn = http.client.HTTPSConnection(REPO_RAW, context=ctx, timeout=20)
+        try:
+            url = f"{REPO_PATH}/{name}"
+            conn.request("GET", url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = conn.getresponse()
+            if resp.status != 200:
+                raise FetchError(f"HTTP {resp.status} for {name}")
+            return resp.read().decode("utf-8")
+        except (OSError, ssl.SSLError, http.client.HTTPException, FetchError) as exc:
+            last_error = exc
+            print(f"  [WARN] Failed to fetch {name} (attempt {attempt}/3): {exc}")
+            time.sleep(2 * attempt)
+        finally:
+            conn.close()
+    raise FetchError(f"Failed to fetch {name}: {last_error}")
+
+
+def count_domains(path: str) -> int:
+    if not os.path.exists(path):
+        return 0
+    with open(path, encoding="utf-8") as file:
+        return sum(1 for line in file if line.strip() and not line.startswith("#"))
 
 
 def parse_and_resolve(name: str, visited: set[str], all_domains: set[str], section_label: str) -> str:
@@ -57,8 +76,6 @@ def parse_and_resolve(name: str, visited: set[str], all_domains: set[str], secti
     visited.add(name)
 
     content = fetch_file(name)
-    if not content:
-        return ""
 
     includes = []
     for line in content.splitlines():
@@ -96,15 +113,32 @@ def main():
     all_domains: set[str] = set()
     visited: set[str] = set()
 
-    parse_and_resolve(ENTRY_POINT, visited, all_domains, ENTRY_POINT)
+    try:
+        parse_and_resolve(ENTRY_POINT, visited, all_domains, ENTRY_POINT)
+    except FetchError as exc:
+        print(f"[ERROR] {exc}")
+        print("[ERROR] Aborting; existing blocklist left unchanged.")
+        sys.exit(1)
 
     # Sort domains
     sorted_domains = sorted(all_domains)
 
     print(f"Resolved {len(visited)} files, collected {len(sorted_domains)} ad/tracking domains.")
 
-    # Write output
     output_path = os.path.abspath(OUTPUT_FILE)
+    previous_count = count_domains(output_path)
+
+    if not sorted_domains:
+        print("[ERROR] No ad/tracking domains collected; aborting.")
+        sys.exit(1)
+    if previous_count and len(sorted_domains) < previous_count * 0.5:
+        print(
+            f"[ERROR] Domain count dropped from {previous_count} to "
+            f"{len(sorted_domains)}; aborting to avoid wiping the blocklist."
+        )
+        sys.exit(1)
+
+    # Write output
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:

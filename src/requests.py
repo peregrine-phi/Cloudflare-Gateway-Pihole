@@ -70,7 +70,7 @@ def cloudflare_gateway_request(
                 error(error_message)
                 raise HTTPException(error_message)
             elif status == 404:
-                error(error_message)
+                silent_error(error_message)
                 raise NotFoundException(error_message)
             else:
                 silent_error(error_message)
@@ -164,17 +164,18 @@ retry_config = {
 
 # Rate Limiter Class
 class RateLimiter:
+    _last_request = 0.0
+
     def __init__(self, interval: float = 1):
         self.interval = interval
-        self.timestamp = time.time()
 
     def wait_for_next_request(self):
         now = time.time()
-        elapsed = now - self.timestamp
+        elapsed = now - RateLimiter._last_request
         sleep_time = max(0, self.interval - elapsed)
         if sleep_time > 0:
             time.sleep(sleep_time)
-        self.timestamp = time.time()
+        RateLimiter._last_request = time.time()
 
 # Rate Limited Request Decorator
 def rate_limited_request(func):
